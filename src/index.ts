@@ -17,7 +17,8 @@ const cosmosClient = new CosmosClient({
   key: process.env.COSMOSDB_KEY!,
 });
 
-const container = cosmosClient.database("todos").container("tasks");
+const dbName = process.env.COSMOSDB_DATABASE || "todos";
+const containerName = process.env.COSMOSDB_CONTAINER || "tasks";
 
 // Tool definitions
 const UPDATE_ITEM_TOOL: Tool = {
@@ -74,22 +75,32 @@ const QUERY_CONTAINER_TOOL: Tool = {
   },
 };
 
+const LIST_CONTAINERS_TOOL: Tool = {
+  name: "list_containers",
+  description: "Lists all available containers in the database",
+  inputSchema: { 
+    type: "object",
+    properties: {}, 
+    required: []
+  }
+};
+
 
 async function updateItem(params: any) {
   try {
-    const { id, updates } = params;
-    const { resource } = await container.item(id).read();
+    const { containerName, id, updates } = params;
+    const selectedContainer = cosmosClient.database(dbName).container(containerName);
+    const { resource } = await selectedContainer.item(id).read();
     
     if (!resource) {
       throw new Error("Item not found");
     }
 
     const updatedItem = { ...resource, ...updates };
-
-    const { resource: updatedResource } = await container.item(id).replace(updatedItem);
+    const { resource: updatedResource } = await selectedContainer.item(id).replace(updatedItem);
     return {
       success: true,
-      message: `Item updated successfully`,
+      message: `Item updated successfully in container ${containerName}`,
       item: updatedResource,
     };
   } catch (error) {
@@ -103,12 +114,13 @@ async function updateItem(params: any) {
 
 async function putItem(params: any) {
   try {
-    const { item } = params;
-    const { resource } = await container.items.create(item);
+    const { containerName, item } = params;
+    const selectedContainer = cosmosClient.database(dbName).container(containerName);
+    const { resource } = await selectedContainer.items.create(item);
 
     return {
       success: true,
-      message: `Item added successfully to container`,
+      message: `Item added successfully to container ${containerName}`,
       item: resource,
     };
   } catch (error) {
@@ -122,12 +134,13 @@ async function putItem(params: any) {
 
 async function getItem(params: any) {
   try {
-    const { id } = params;
-    const { resource } = await container.item(id).read();
+    const { containerName, id } = params;
+    const selectedContainer = cosmosClient.database(dbName).container(containerName);
+    const { resource } = await selectedContainer.item(id).read();
 
     return {
       success: true,
-      message: `Item retrieved successfully`,
+      message: `Item retrieved successfully from container ${containerName}`,
       item: resource,
     };
   } catch (error) {
@@ -141,12 +154,13 @@ async function getItem(params: any) {
 
 async function queryContainer(params: any) {
   try {
-    const { query, parameters } = params;
-    const { resources } = await container.items.query({ query, parameters }).fetchAll();
+    const { containerName, query, parameters } = params;
+    const selectedContainer = cosmosClient.database(dbName).container(containerName);
+    const { resources } = await selectedContainer.items.query({ query, parameters }).fetchAll();
 
     return {
       success: true,
-      message: `Query executed successfully`,
+      message: `Query executed successfully on container ${containerName}`,
       items: resources,
     };
   } catch (error) {
@@ -154,6 +168,23 @@ async function queryContainer(params: any) {
     return {
       success: false,
       message: `Failed to query container: ${error}`,
+    };
+  }
+}
+
+async function listContainers() {
+  try {
+    const database = cosmosClient.database(dbName);
+    const { resources } = await database.containers.readAll().fetchAll();
+    return {
+      success: true,
+      message: "Containers retrieved successfully",
+      containers: resources.map(c => c.id)
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: `Failed to list containers: ${error}`
     };
   }
 }
@@ -173,7 +204,7 @@ const server = new Server(
 
 // Request handlers
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [PUT_ITEM_TOOL, GET_ITEM_TOOL, QUERY_CONTAINER_TOOL, UPDATE_ITEM_TOOL],
+  tools: [PUT_ITEM_TOOL, GET_ITEM_TOOL, QUERY_CONTAINER_TOOL, UPDATE_ITEM_TOOL, LIST_CONTAINERS_TOOL],
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -193,6 +224,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "update_item":
         result = await updateItem(args);
+        break;
+      case "list_containers":
+        result = await listContainers();
         break;
       default:
         return {
