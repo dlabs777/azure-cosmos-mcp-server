@@ -72,6 +72,25 @@ const LIST_CONTAINERS_TOOL = {
         required: []
     }
 };
+const SAMPLE_ITEM_TOOL = {
+    name: "sample_item",
+    description: "Returns the most recent item from a specified container to understand its schema",
+    inputSchema: {
+        type: "object",
+        properties: {
+            containerName: { type: "string", description: "Name of the container to sample" },
+            limit: { type: "number", description: "Maximum number of items to return (default: 1)" },
+        },
+        required: ["containerName"],
+    },
+};
+// Function to truncate long string values to first 10 words
+function truncateLongValues(value) {
+    if (typeof value === 'string' && value.length > 100) {
+        return value.split(' ').slice(0, 10).join(' ') + '...';
+    }
+    return value;
+}
 async function updateItem(params) {
     try {
         const { containerName, id, updates } = params;
@@ -170,6 +189,44 @@ async function listContainers() {
         };
     }
 }
+async function sampleItem(params) {
+    try {
+        const { containerName, limit = 1 } = params;
+        const selectedContainer = cosmosClient.database(dbName).container(containerName);
+        const query = "SELECT * FROM c ORDER BY c._ts DESC OFFSET 0 LIMIT @limit";
+        const queryParams = [{ name: "@limit", value: limit }];
+        const { resources } = await selectedContainer.items.query({
+            query,
+            parameters: queryParams
+        }).fetchAll();
+        const truncatedResources = resources.map(item => {
+            const truncatedItem = {};
+            for (const key in item) {
+                truncatedItem[key] = truncateLongValues(item[key]);
+            }
+            return truncatedItem;
+        });
+        return {
+            success: true,
+            message: `Retrieved ${resources.length} sample item(s) from container ${containerName}`,
+            items: truncatedResources,
+            schema: resources.length > 0 ? Object.keys(resources[0]).map(key => {
+                return {
+                    field: key,
+                    type: typeof resources[0][key],
+                    sample: truncateLongValues(resources[0][key])
+                };
+            }) : []
+        };
+    }
+    catch (error) {
+        console.error("Error sampling container:", error);
+        return {
+            success: false,
+            message: `Failed to sample container: ${error}`,
+        };
+    }
+}
 const server = new Server({
     name: "cosmosdb-mcp-server",
     version: "0.1.0",
@@ -180,7 +237,7 @@ const server = new Server({
 });
 // Request handlers
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [PUT_ITEM_TOOL, GET_ITEM_TOOL, QUERY_CONTAINER_TOOL, UPDATE_ITEM_TOOL, LIST_CONTAINERS_TOOL],
+    tools: [PUT_ITEM_TOOL, GET_ITEM_TOOL, QUERY_CONTAINER_TOOL, UPDATE_ITEM_TOOL, LIST_CONTAINERS_TOOL, SAMPLE_ITEM_TOOL],
 }));
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -201,6 +258,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 break;
             case "list_containers":
                 result = await listContainers();
+                break;
+            case "sample_item":
+                result = await sampleItem(args);
                 break;
             default:
                 return {
